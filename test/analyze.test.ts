@@ -102,3 +102,16 @@ describe('isDiscriminative', async () => {
     expect(isDiscriminative('**/*.md', all)).toBe(true);
   });
 });
+
+describe('keywords', () => {
+  it('are shown as real words, not stems', () => {
+    const comments = [
+      c('Please require the assertion helpers in tests here'),
+      c('These assertions should require the shared helpers'),
+      c('Use the required assertion helpers for this check'),
+    ];
+    const [r] = analyze({ comments }, { ...DEFAULT_ANALYZE, minPrs: 1 });
+    expect(r.keywords).toContain('require');
+    expect(r.keywords.some((k) => k === 'requir')).toBe(false);
+  });
+});

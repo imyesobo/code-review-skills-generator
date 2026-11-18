@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { analyze, type AnalyzeOptions } from './analyze/index.js';
 import { applyCachedOnly, refineWithLlm, type LlmOptions } from './analyze/llm.js';
@@ -76,17 +76,26 @@ export async function analyzeDataset(
 }
 
 /** "*" writes into `out`; per-repo scopes go to out/<provider>/<owner>/<repo>. */
-export function generateFromRuleSet(ruleSet: RuleSet, opts: GenerateOptions, log: Log) {
+export function generateFromRuleSet(ruleSet: RuleSet, opts: GenerateOptions, log: Log): { written: string[]; removed: string[] } {
+  const result = { written: [] as string[], removed: [] as string[] };
   for (const [scope, rules] of Object.entries(ruleSet)) {
     const out = scope === '*' ? opts.out : join(opts.out, ...scope.replace(':', '/').split('/'));
     const { files, removed } = writeFiles(rules, { ...opts, out });
     const dry = opts.dryRun ? '[dry-run] ' : '';
-    for (const f of files) log(`${dry}${join(out, f.path)}`);
-    for (const p of removed) log(`${dry}removed stale ${join(out, p)}`);
+    for (const f of files) {
+      result.written.push(join(out, f.path));
+      log(`${dry}${join(out, f.path)}`);
+    }
+    for (const p of removed) {
+      result.removed.push(join(out, p));
+      log(`${dry}removed stale ${join(out, p)}`);
+    }
   }
+  return result;
 }
 
-export function readJson<T>(path: string): T {
+export function readJson<T>(path: string, hint = ''): T {
+  if (!existsSync(path)) throw new Error(`${path} not found.${hint ? ` ${hint}` : ''}`);
   return JSON.parse(readFileSync(path, 'utf8')) as T;
 }
 

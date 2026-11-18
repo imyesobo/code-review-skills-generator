@@ -4,7 +4,7 @@ import { CATEGORY_LABELS, categorize } from './categories.js';
 import { centroidOf, cluster, cosine, tfidf, topTerms } from './cluster.js';
 import { normalize, type CleanComment } from './normalize.js';
 import { inferApplyTo, isDiscriminative } from './scope.js';
-import { tokenize } from './tokenize.js';
+import { surfaceOf, tokenize, type Surfaces } from './tokenize.js';
 
 export interface AnalyzeOptions {
   threshold: number;
@@ -26,7 +26,8 @@ export const DEFAULT_ANALYZE: AnalyzeOptions = {
 
 export function analyze(dataset: Pick<Dataset, 'comments'>, opts: AnalyzeOptions = DEFAULT_ANALYZE): Rule[] {
   const comments = normalize(dataset.comments, opts);
-  const tokens = comments.map((c) => tokenize(c.text));
+  const surfaces: Surfaces = new Map();
+  const tokens = comments.map((c) => tokenize(c.text, surfaces));
   const { vectors } = tfidf(tokens);
   const clusters = cluster(vectors, opts.threshold);
   const allPaths = comments.flatMap((c) => (c.path ? [c.path] : []));
@@ -39,7 +40,7 @@ export function analyze(dataset: Pick<Dataset, 'comments'>, opts: AnalyzeOptions
     if (members.length < opts.minSupport || prs.size < opts.minPrs) continue;
 
     const vecs = idx.map((i) => vectors[i]);
-    const keywords = topTerms(centroidOf(vecs), 5);
+    const keywords = topTerms(centroidOf(vecs), 5).map((k) => surfaceOf(k, surfaces));
     const category = categorize(idx.map((i) => tokens[i]));
     const center = members[representative(members, vecs)];
     const glob = inferApplyTo(members.map((c) => c.path));

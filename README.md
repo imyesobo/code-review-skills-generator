@@ -53,6 +53,16 @@ crsg generate --out . [--targets agents,instructions,skills] [--dry-run]
 
 Tune with `--threshold` (similarity, default 0.3), `--include-bots` (e.g. to learn from Copilot reviews), `--min-confidence`.
 
+## Use from AI agents
+
+- **`--json`** silences progress logs and prints one summary to stdout: `ok`, `comments` (total/new per repo), `rules` per scope (added/updated/removed with id, title, category, applyTo), `files` (written/removed) and `warnings` (failed repos, skipped LLM calls). Failures print `{"ok":false,"error":"..."}` and exit with code 1.
+- **Agent skill:** [`skills/code-review-skills-generator/SKILL.md`](skills/code-review-skills-generator/SKILL.md) tells agents (Copilot CLI, Claude Code, …) when and how to call `crsg`, and to stop early when nothing is new. Install it by copying or symlinking the folder into `~/.copilot/skills/` (or a repo's `.github/skills/`). Then make `crsg` available on your PATH:
+
+  ```sh
+  npm install && npm run build && npm link
+  ln -s "$PWD/skills/code-review-skills-generator" ~/.copilot/skills/
+  ```
+
 ## Develop
 
 ```sh

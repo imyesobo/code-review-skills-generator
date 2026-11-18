@@ -27,12 +27,29 @@ export function stem(word: string): string {
   return w;
 }
 
-export function tokenize(text: string): string[] {
-  return text
+/** stem -> surface form -> count; lets us display "require" instead of the stem "requir". */
+export type Surfaces = Map<string, Map<string, number>>;
+
+export function tokenize(text: string, surfaces?: Surfaces): string[] {
+  const words = text
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .toLowerCase()
     .replace(/`([^`]*)`/g, ' $1 ')
     .split(/[^a-z0-9+#]+/)
-    .filter((w) => w.length > 1 && !STOPWORDS.has(w) && !/^\d+$/.test(w))
-    .map(stem);
+    .filter((w) => w.length > 1 && !STOPWORDS.has(w) && !/^\d+$/.test(w));
+  return words.map((w) => {
+    const s = stem(w);
+    if (surfaces) {
+      const m = surfaces.get(s) ?? new Map<string, number>();
+      m.set(w, (m.get(w) ?? 0) + 1);
+      surfaces.set(s, m);
+    }
+    return s;
+  });
+}
+
+export function surfaceOf(stemmed: string, surfaces: Surfaces): string {
+  const m = surfaces.get(stemmed);
+  if (!m) return stemmed;
+  return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].length - b[0].length || a[0].localeCompare(b[0]))[0][0];
 }

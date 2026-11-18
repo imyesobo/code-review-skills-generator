@@ -5,7 +5,7 @@ import { DEFAULT_LLM, type LlmOptions } from './analyze/llm.js';
 import { DEFAULT_GENERATE, type Target } from './generate/index.js';
 import { analyzeDataset, fetchDataset, generateFromRuleSet, readJson, writeJson } from './pipeline.js';
 import { formatReport, readJsonIfExists, statePaths, type LlmCacheEntry, type RuleDiff, type State } from './state.js';
-import type { Dataset, RuleSet } from './types.js';
+import type { Dataset, Rule, RuleSet } from './types.js';
 
 const HELP = `crsg - generate AI agent instructions & skills from pull request reviews
 
@@ -32,6 +32,8 @@ State (incremental runs):
                              Commit it to share progress across machines/CI, or gitignore it.
   --full                     ignore stored cursors/rules and rebuild from scratch
   --no-report                don't print the "new since last run" summary
+  --json                     machine-readable: silence progress logs, print one JSON summary to stdout
+                             ({"ok":false,"error":...} and exit 1 on failure). Intended for AI agents/CI.
 
 Fetch options:
   --since <90d|YYYY-MM-DD>   first-run horizon; later runs resume from each repo's cursor (default 180d)
@@ -68,6 +70,7 @@ const { positionals, values } = parseArgs({
     rules: { type: 'string' },
     full: { type: 'boolean', default: false },
     'no-report': { type: 'boolean', default: false },
+    json: { type: 'boolean', default: false },
     'per-repo': { type: 'boolean', default: false },
     threshold: { type: 'string' },
     'min-support': { type: 'string' },
@@ -85,7 +88,12 @@ const { positionals, values } = parseArgs({
   },
 });
 
-const log = (m: string) => console.error(m);
+// --json: progress logs are silenced and a single JSON summary goes to stdout.
+const warnings: string[] = [];
+const log = (m: string) => {
+  if (/^\s*! |refinement skipped/.test(m)) warnings.push(m.trim().replace(/^! /, ''));
+  if (!values.json) console.error(m);
+};
 const num = (v: string | undefined, d: number) => (v === undefined ? d : Number(v));
 
 function parseSince(v: string | undefined): Date | undefined {
@@ -99,7 +107,13 @@ function parseSince(v: string | undefined): Date | undefined {
 const paths = statePaths(values['state-dir']!);
 const dataPath = values.data ?? paths.dataset;
 const rulesPath = values.rules ?? paths.rules;
-const report = { addedByRepo: undefined as Map<string, number> | undefined, diffs: undefined as Record<string, RuleDiff> | undefined };
+const report = {
+  addedByRepo: undefined as Map<string, number> | undefined,
+  diffs: undefined as Record<string, RuleDiff> | undefined,
+  dataset: undefined as Dataset | undefined,
+  ruleSet: undefined as RuleSet | undefined,
+  files: undefined as { written: string[]; removed: string[] } | undefined,
+};
 
 async function doFetch(sources: string[]) {
   if (!sources.length) throw new Error('No sources given. See --help.');
@@ -114,6 +128,7 @@ async function doFetch(sources: string[]) {
   writeJson(dataPath, dataset);
   writeJson(paths.state, state);
   report.addedByRepo = addedByRepo;
+  report.dataset = dataset;
   const added = [...addedByRepo.values()].reduce((a, b) => a + b, 0);
   log(`Saved ${dataset.comments.length} comments (+${added} new) from ${dataset.repos.length} repo(s) to ${dataPath}`);
   return dataset;
@@ -143,6 +158,7 @@ async function doAnalyze(dataset: Dataset) {
   writeJson(rulesPath, ruleSet);
   if (llm) writeJson(paths.llmCache, llmCache);
   report.diffs = diffs;
+  report.ruleSet = ruleSet;
   log(`Saved rules to ${rulesPath}`);
   return ruleSet;
 }
@@ -151,7 +167,7 @@ function doGenerate(ruleSet: RuleSet) {
   const targets = values.targets!.split(',').map((t) => t.trim()) as Target[];
   const bad = targets.filter((t) => !['agents', 'instructions', 'skills'].includes(t));
   if (bad.length) throw new Error(`Unknown target(s): ${bad.join(', ')}`);
-  generateFromRuleSet(
+  report.files = generateFromRuleSet(
     ruleSet,
     { ...DEFAULT_GENERATE, out: values.out!, targets, minConfidence: num(values['min-confidence'], 0), dryRun: values['dry-run']! },
     log,
@@ -167,10 +183,10 @@ async function main() {
       await doFetch(rest);
       break;
     case 'analyze':
-      await doAnalyze(readJson<Dataset>(dataPath));
+      await doAnalyze(readJson<Dataset>(dataPath, 'Run `crsg fetch <source...>` first (or use `crsg run`).'));
       break;
     case 'generate':
-      doGenerate(readJson<RuleSet>(rulesPath));
+      doGenerate(readJson<RuleSet>(rulesPath, 'Run `crsg analyze` first (or use `crsg run`).'));
       break;
     case 'run':
       doGenerate(await doAnalyze(await doFetch(rest)));
@@ -178,12 +194,50 @@ async function main() {
     default:
       throw new Error(`Unknown command: ${cmd}. See --help.`);
   }
-  if (!values['no-report'] && (report.addedByRepo || report.diffs)) {
+  if (values.json) console.log(JSON.stringify(jsonSummary(cmd), null, 2));
+  else if (!values['no-report'] && (report.addedByRepo || report.diffs)) {
     log(formatReport(report.addedByRepo ?? new Map(), report.diffs ?? {}));
   }
 }
 
+const brief = (r: Rule) => ({ id: r.id, title: r.title, category: r.category, applyTo: r.applyTo, support: r.support, confidence: r.confidence });
+
+function jsonSummary(command: string) {
+  const { addedByRepo, diffs, dataset, ruleSet, files } = report;
+  return {
+    ok: true,
+    command,
+    dryRun: values['dry-run'],
+    paths: { stateDir: paths.dir, dataset: dataPath, rules: rulesPath, out: values.out },
+    ...(dataset && {
+      comments: {
+        total: dataset.comments.length,
+        new: [...(addedByRepo?.values() ?? [])].reduce((a, b) => a + b, 0),
+        newByRepo: Object.fromEntries(addedByRepo ?? []),
+      },
+      repos: dataset.repos,
+    }),
+    ...(ruleSet && {
+      rules: Object.fromEntries(
+        Object.entries(ruleSet).map(([scope, rules]) => [
+          scope,
+          {
+            total: rules.length,
+            added: diffs?.[scope]?.added.map(brief) ?? [],
+            updated: diffs?.[scope]?.changed.map(brief) ?? [],
+            removed: diffs?.[scope]?.removed.map(brief) ?? [],
+          },
+        ]),
+      ),
+    }),
+    ...(files && { files }),
+    warnings,
+  };
+}
+
 main().catch((err) => {
-  console.error(`error: ${(err as Error).message}`);
+  const message = (err as Error).message;
+  if (values.json) console.log(JSON.stringify({ ok: false, error: message }));
+  else console.error(`error: ${message}`);
   process.exit(1);
 });
