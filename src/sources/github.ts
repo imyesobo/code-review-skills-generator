@@ -92,11 +92,12 @@ export class GitHubProvider implements SourceProvider {
     return repos.filter((r) => !r.archived && !r.fork && !r.disabled).map((r) => `github:${r.full_name}`);
   }
 
-  async fetchComments(repoKey: string, opts: FetchOptions): Promise<ReviewComment[]> {
+  async fetchComments(repoKey: string, opts: FetchOptions): Promise<{ comments: ReviewComment[]; cursor?: string }> {
     const [owner, name] = repoKey.replace(/^github:/, '').split('/');
     const out: ReviewComment[] = [];
     let cursor: string | null = null;
     let seen = 0;
+    let newest: string | undefined;
 
     while (seen < opts.maxPrs) {
       type Resp = { repository: { pullRequests: { pageInfo: { hasNextPage: boolean; endCursor: string }; nodes: PrNode[] } } };
@@ -108,6 +109,7 @@ export class GitHubProvider implements SourceProvider {
       for (const pr of page.nodes) {
         if (opts.since && new Date(pr.updatedAt) < opts.since) { reachedSince = true; break; }
         seen++;
+        if (!newest || pr.updatedAt > newest) newest = pr.updatedAt;
         const base = { provider: 'github' as const, repo: repoKey, pr: pr.number, prUrl: pr.url, prAuthor: pr.author?.login ?? '' };
         for (const t of pr.reviewThreads.nodes) {
           for (const c of t.comments.nodes) out.push(toComment(base, c, 'inline', t.path));
@@ -118,7 +120,7 @@ export class GitHubProvider implements SourceProvider {
       if (reachedSince || !page.pageInfo.hasNextPage) break;
       cursor = page.pageInfo.endCursor;
     }
-    return out;
+    return { comments: out, cursor: newest };
   }
 }
 

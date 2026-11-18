@@ -60,7 +60,7 @@ export class AdoProvider implements SourceProvider {
     return value.filter((r) => !r.isDisabled).map((r) => `ado:${this.org}/${r.project.name}/${r.name}`);
   }
 
-  async fetchComments(repoKey: string, opts: FetchOptions): Promise<ReviewComment[]> {
+  async fetchComments(repoKey: string, opts: FetchOptions): Promise<{ comments: ReviewComment[]; cursor?: string }> {
     const [org, project, repo] = repoKey.replace(/^ado:/, '').split('/');
     const repoUrl = `https://dev.azure.com/${encodeURIComponent(org)}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repo)}`;
     const webUrl = `https://dev.azure.com/${encodeURIComponent(org)}/${encodeURIComponent(project)}/_git/${encodeURIComponent(repo)}`;
@@ -77,6 +77,14 @@ export class AdoProvider implements SourceProvider {
       if (value.length < top || fresh.length < value.length) break;
       skip += value.length;
     }
+    // ADO PRs expose no "last updated" field, so active PRs older than `since` may still
+    // receive new comments: always re-scan them on incremental runs.
+    if (opts.since) {
+      const known = new Set(prs.map((p) => p.pullRequestId));
+      const { value } = await this.get<{ value: AdoPr[] }>(`${repoUrl}/pullrequests?searchCriteria.status=active&$top=${opts.maxPrs}`);
+      prs.push(...value.filter((p) => !known.has(p.pullRequestId)));
+    }
+    const cursor = prs.map((p) => p.closedDate ?? p.creationDate).sort().at(-1);
 
     const perPr = await pMap(prs, 4, async (pr) => {
       const { value: threads } = await this.get<{ value: AdoThread[] }>(`${repoUrl}/pullRequests/${pr.pullRequestId}/threads`);
@@ -111,7 +119,7 @@ export class AdoProvider implements SourceProvider {
 
     const comments = perPr.flat();
     opts.log(`  ${repoKey}: ${prs.length} PRs scanned, ${comments.length} comments`);
-    return comments;
+    return { comments, cursor };
   }
 }
 

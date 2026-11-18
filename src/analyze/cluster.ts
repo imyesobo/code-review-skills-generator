@@ -84,7 +84,41 @@ export function cluster(vectors: Vec[], threshold: number): number[][] {
       }
     }
   }
-  return members;
+  return refine(vectors, members, threshold);
+}
+
+/**
+ * Centroid drift lets leader clustering absorb loosely related docs. Reassign each doc
+ * to its best centroid (if >= threshold, else a singleton) until stable.
+ */
+function refine(vectors: Vec[], initial: number[][], threshold: number, maxIter = 10): number[][] {
+  let groups = initial;
+  for (let iter = 0; iter < maxIter; iter++) {
+    const centroids = groups.map((g) => centroidOf(g.map((i) => vectors[i])));
+    const next: number[][] = groups.map(() => []);
+    const singles: number[][] = [];
+    let moved = false;
+    groups.forEach((g, from) => {
+      for (const i of g) {
+        let best = -1;
+        let bestSim = threshold;
+        centroids.forEach((c, j) => {
+          const s = cosine(vectors[i], c);
+          if (s > bestSim || (s === bestSim && j === from)) { bestSim = s; best = j; }
+        });
+        if (best === -1) {
+          if (g.length > 1) moved = true;
+          singles.push([i]);
+        } else {
+          if (best !== from) moved = true;
+          next[best].push(i);
+        }
+      }
+    });
+    groups = [...next.filter((g) => g.length), ...singles];
+    if (!moved) break;
+  }
+  return groups.map((g) => g.sort((a, b) => a - b));
 }
 
 export function centroidOf(vectors: Vec[]): Vec {

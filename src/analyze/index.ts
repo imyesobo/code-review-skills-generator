@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 import type { Dataset, Rule } from '../types.js';
 import { CATEGORY_LABELS, categorize } from './categories.js';
-import { centroidOf, cluster, medoid, tfidf, topTerms } from './cluster.js';
+import { centroidOf, cluster, cosine, tfidf, topTerms } from './cluster.js';
 import { normalize, type CleanComment } from './normalize.js';
-import { inferApplyTo } from './scope.js';
+import { inferApplyTo, isDiscriminative } from './scope.js';
 import { tokenize } from './tokenize.js';
 
 export interface AnalyzeOptions {
@@ -29,6 +29,7 @@ export function analyze(dataset: Pick<Dataset, 'comments'>, opts: AnalyzeOptions
   const tokens = comments.map((c) => tokenize(c.text));
   const { vectors } = tfidf(tokens);
   const clusters = cluster(vectors, opts.threshold);
+  const allPaths = comments.flatMap((c) => (c.path ? [c.path] : []));
 
   const rules: Rule[] = [];
   for (const idx of clusters) {
@@ -40,7 +41,8 @@ export function analyze(dataset: Pick<Dataset, 'comments'>, opts: AnalyzeOptions
     const vecs = idx.map((i) => vectors[i]);
     const keywords = topTerms(centroidOf(vecs), 5);
     const category = categorize(idx.map((i) => tokens[i]));
-    const center = members[medoid(vecs)];
+    const center = members[representative(members, vecs)];
+    const glob = inferApplyTo(members.map((c) => c.path));
     const repos = [...new Set(members.map((c) => c.repo))].sort();
 
     rules.push({
@@ -48,7 +50,7 @@ export function analyze(dataset: Pick<Dataset, 'comments'>, opts: AnalyzeOptions
       title: `${CATEGORY_LABELS[category]}: ${keywords.slice(0, 3).join(', ')}`,
       rule: summarize(center.text),
       category,
-      applyTo: inferApplyTo(members.map((c) => c.path)),
+      applyTo: glob && isDiscriminative(glob, allPaths) ? glob : undefined,
       keywords,
       support: members.length,
       prs: prs.size,
@@ -57,9 +59,23 @@ export function analyze(dataset: Pick<Dataset, 'comments'>, opts: AnalyzeOptions
       confidence: confidence(members.length, prs.size, reviewers.size),
       refinedBy: 'heuristic',
       examples: pickExamples(members, center, opts.maxExamples),
+      members: members.map((m) => m.id).sort(),
     });
   }
   return rules.sort((a, b) => b.confidence - a.confidence || b.support - a.support);
+}
+
+/** Most central member, preferring statements over questions and substantive over terse text. */
+function representative(members: CleanComment[], vecs: ReturnType<typeof tfidf>['vectors']): number {
+  const c = centroidOf(vecs);
+  let best = 0;
+  let bestScore = -1;
+  members.forEach((m, i) => {
+    const question = /\?\s*$/.test(m.text) || /^(can|could|should|would|do|does|is|are|why|what|how)\b/i.test(m.text);
+    const score = cosine(vecs[i], c) * (question ? 0.6 : 1) * (m.text.length < 40 ? 0.8 : 1);
+    if (score > bestScore) { bestScore = score; best = i; }
+  });
+  return best;
 }
 
 export function confidence(support: number, prs: number, reviewers: number): number {
@@ -71,7 +87,7 @@ export function confidence(support: number, prs: number, reviewers: number): num
 
 /** First one or two sentences, capped, as an imperative-ish guideline. */
 export function summarize(text: string, max = 240): string {
-  const sentences = text.match(/[^.!?]+[.!?]?/g) ?? [text];
+  const sentences = text.split(/(?<=[.!?])\s+(?=[A-Z`"'(])/);
   let out = sentences[0].trim();
   if (out.length < 60 && sentences[1]) out = `${out} ${sentences[1].trim()}`;
   if (out.length > max) out = `${out.slice(0, max - 1).replace(/\s+\S*$/, '')}…`;

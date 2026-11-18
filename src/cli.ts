@@ -4,6 +4,7 @@ import { DEFAULT_ANALYZE } from './analyze/index.js';
 import { DEFAULT_LLM, type LlmOptions } from './analyze/llm.js';
 import { DEFAULT_GENERATE, type Target } from './generate/index.js';
 import { analyzeDataset, fetchDataset, generateFromRuleSet, readJson, writeJson } from './pipeline.js';
+import { formatReport, readJsonIfExists, statePaths, type LlmCacheEntry, type RuleDiff, type State } from './state.js';
 import type { Dataset, RuleSet } from './types.js';
 
 const HELP = `crsg - generate AI agent instructions & skills from pull request reviews
@@ -26,13 +27,19 @@ Auth:
   Azure DevOps: AZURE_DEVOPS_TOKEN, else \`az account get-access-token\` (az login), else AZURE_DEVOPS_EXT_PAT
                 --ado-tenant <id|domain> (or AZURE_DEVOPS_TENANT) when the org is in a non-default tenant
 
+State (incremental runs):
+  --state-dir <dir>          where state.json, dataset.json, rules.json, llm-cache.json live (default .crsg)
+                             Commit it to share progress across machines/CI, or gitignore it.
+  --full                     ignore stored cursors/rules and rebuild from scratch
+  --no-report                don't print the "new since last run" summary
+
 Fetch options:
-  --since <90d|YYYY-MM-DD>   only PRs updated since (default 180d)
-  --max-prs <n>              max PRs per repo (default 200)
-  --data <file>              dataset path (default .crsg/dataset.json)
+  --since <90d|YYYY-MM-DD>   first-run horizon; later runs resume from each repo's cursor (default 180d)
+  --max-prs <n>              max PRs per repo per run (default 200)
+  --data <file>              dataset path (default <state-dir>/dataset.json)
 
 Analyze options:
-  --rules <file>             rules path (default .crsg/rules.json)
+  --rules <file>             rules path (default <state-dir>/rules.json)
   --per-repo                 produce separate rules per repo instead of one combined set
   --threshold <0-1>          clustering similarity (default ${DEFAULT_ANALYZE.threshold})
   --min-support <n>          min comments per rule (default ${DEFAULT_ANALYZE.minSupport})
@@ -40,7 +47,7 @@ Analyze options:
   --include-bots             keep comments from bots
   --llm                      refine wording with one batched LLM call (OpenAI-compatible)
   --llm-model <id>           default ${DEFAULT_LLM.model}
-  --llm-endpoint <url>       default GitHub Models; key from LLM_API_KEY or GitHub token
+  --llm-endpoint <url>       default local Ollama ($OLLAMA_HOST or 127.0.0.1:11434); key from LLM_API_KEY
   --llm-max-rules <n>        rules sent to the LLM (default ${DEFAULT_LLM.maxRules})
 
 Generate options:
@@ -56,8 +63,11 @@ const { positionals, values } = parseArgs({
     help: { type: 'boolean', short: 'h' },
     since: { type: 'string', default: '180d' },
     'max-prs': { type: 'string', default: '200' },
-    data: { type: 'string', default: '.crsg/dataset.json' },
-    rules: { type: 'string', default: '.crsg/rules.json' },
+    'state-dir': { type: 'string', default: '.crsg' },
+    data: { type: 'string' },
+    rules: { type: 'string' },
+    full: { type: 'boolean', default: false },
+    'no-report': { type: 'boolean', default: false },
     'per-repo': { type: 'boolean', default: false },
     threshold: { type: 'string' },
     'min-support': { type: 'string' },
@@ -86,11 +96,26 @@ function parseSince(v: string | undefined): Date | undefined {
   return d;
 }
 
+const paths = statePaths(values['state-dir']!);
+const dataPath = values.data ?? paths.dataset;
+const rulesPath = values.rules ?? paths.rules;
+const report = { addedByRepo: undefined as Map<string, number> | undefined, diffs: undefined as Record<string, RuleDiff> | undefined };
+
 async function doFetch(sources: string[]) {
   if (!sources.length) throw new Error('No sources given. See --help.');
-  const dataset = await fetchDataset(sources, { since: parseSince(values.since), maxPrs: num(values['max-prs'], 200), log });
-  writeJson(values.data!, dataset);
-  log(`Saved ${dataset.comments.length} comments from ${dataset.repos.length} repo(s) to ${values.data}`);
+  const { dataset, state, addedByRepo } = await fetchDataset(sources, {
+    since: parseSince(values.since),
+    maxPrs: num(values['max-prs'], 200),
+    log,
+    previous: readJsonIfExists<Dataset>(dataPath),
+    state: readJsonIfExists<State>(paths.state),
+    full: values.full,
+  });
+  writeJson(dataPath, dataset);
+  writeJson(paths.state, state);
+  report.addedByRepo = addedByRepo;
+  const added = [...addedByRepo.values()].reduce((a, b) => a + b, 0);
+  log(`Saved ${dataset.comments.length} comments (+${added} new) from ${dataset.repos.length} repo(s) to ${dataPath}`);
   return dataset;
 }
 
@@ -102,7 +127,8 @@ async function doAnalyze(dataset: Dataset) {
         maxRules: num(values['llm-max-rules'], DEFAULT_LLM.maxRules),
       }
     : undefined;
-  const ruleSet = await analyzeDataset(dataset, {
+  const llmCache = readJsonIfExists<LlmCacheEntry[]>(paths.llmCache) ?? [];
+  const { ruleSet, diffs } = await analyzeDataset(dataset, {
     ...DEFAULT_ANALYZE,
     threshold: num(values.threshold, DEFAULT_ANALYZE.threshold),
     minSupport: num(values['min-support'], DEFAULT_ANALYZE.minSupport),
@@ -110,10 +136,14 @@ async function doAnalyze(dataset: Dataset) {
     includeBots: values['include-bots']!,
     perRepo: values['per-repo']!,
     llm,
+    llmCache,
+    previous: values.full ? undefined : readJsonIfExists<RuleSet>(rulesPath),
     log,
   });
-  writeJson(values.rules!, ruleSet);
-  log(`Saved rules to ${values.rules}`);
+  writeJson(rulesPath, ruleSet);
+  if (llm) writeJson(paths.llmCache, llmCache);
+  report.diffs = diffs;
+  log(`Saved rules to ${rulesPath}`);
   return ruleSet;
 }
 
@@ -137,16 +167,19 @@ async function main() {
       await doFetch(rest);
       break;
     case 'analyze':
-      await doAnalyze(readJson<Dataset>(values.data!));
+      await doAnalyze(readJson<Dataset>(dataPath));
       break;
     case 'generate':
-      doGenerate(readJson<RuleSet>(values.rules!));
+      doGenerate(readJson<RuleSet>(rulesPath));
       break;
     case 'run':
       doGenerate(await doAnalyze(await doFetch(rest)));
       break;
     default:
       throw new Error(`Unknown command: ${cmd}. See --help.`);
+  }
+  if (!values['no-report'] && (report.addedByRepo || report.diffs)) {
+    log(formatReport(report.addedByRepo ?? new Map(), report.diffs ?? {}));
   }
 }
 

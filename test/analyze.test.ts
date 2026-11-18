@@ -46,7 +46,9 @@ describe('analyze', () => {
       c('Missing unit tests for the error path here', { path: 'src/b.test.ts' }),
       c('Add unit tests for this error path too', { path: 'src/c.test.ts' }),
       c('Avoid logging the access token, it leaks secrets', { path: 'src/auth.ts' }),
-      c('Rename this variable to something descriptive'),
+      c('Rename this variable to something descriptive', { path: 'lib/x.py' }),
+      c('Should this README section mention the CLI flags?', { path: 'docs/readme.md' }),
+      c('Please bump the chart version for this release', { path: 'deploy/chart.yaml' }),
     ];
     const rules = analyze({ comments }, DEFAULT_ANALYZE);
     expect(rules).toHaveLength(1);
@@ -73,5 +75,30 @@ describe('stem', async () => {
   it('conflates simple inflections', () => {
     expect(new Set(['type', 'types', 'typed'].map(stem)).size).toBe(1);
     expect(new Set(['test', 'tests', 'testing'].map(stem)).size).toBe(1);
+  });
+});
+
+describe('summarize', async () => {
+  const { summarize } = await import('../src/analyze/index.js');
+  it('does not split on dots inside versions or hosts', () => {
+    expect(summarize('Pin to v0.44 on github.com please. Then rebuild everything.')).toBe('Pin to v0.44 on github.com please. Then rebuild everything.');
+    expect(summarize('Avoid hardcoding the retry timeout in the HTTP client constructor here. Use the config value instead of it.')).toBe(
+      'Avoid hardcoding the retry timeout in the HTTP client constructor here.',
+    );
+  });
+});
+
+describe('isDiscriminative', async () => {
+  const { isDiscriminative, globToRegExp } = await import('../src/analyze/scope.js');
+  it('matches generated globs', () => {
+    expect(globToRegExp('src/**/*.{test,spec}.ts').test('src/a/b.spec.ts')).toBe(true);
+    expect(globToRegExp('src/**/*.{test,spec}.ts').test('src/b.test.ts')).toBe(true);
+    expect(globToRegExp('**/*.go').test('main.go')).toBe(true);
+    expect(globToRegExp('**/*.go').test('main.gox')).toBe(false);
+  });
+  it('rejects scopes that cover most reviewed files', () => {
+    const all = ['a.go', 'b/c.go', 'd/e.go', 'docs/x.md'];
+    expect(isDiscriminative('**/*.go', all)).toBe(false);
+    expect(isDiscriminative('**/*.md', all)).toBe(true);
   });
 });

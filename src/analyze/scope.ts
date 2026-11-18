@@ -42,3 +42,33 @@ export function inferApplyTo(paths: (string | undefined)[], dominance = 0.7): st
   if (extOk) return `**/*.${topExt}`;
   return undefined;
 }
+
+/** Minimal glob -> RegExp for the patterns produced above (`**`, `*`, `{a,b}`). */
+export function globToRegExp(glob: string): RegExp {
+  let re = '';
+  for (let i = 0; i < glob.length; i++) {
+    const ch = glob[i];
+    if (ch === '*' && glob[i + 1] === '*') {
+      re += glob[i + 2] === '/' ? '(?:.*/)?' : '.*';
+      i += glob[i + 2] === '/' ? 2 : 1;
+    } else if (ch === '*') re += '[^/]*';
+    else if (ch === '{') {
+      const end = glob.indexOf('}', i);
+      re += `(?:${glob.slice(i + 1, end).split(',').map(escape).join('|')})`;
+      i = end;
+    } else re += escape(ch);
+  }
+  return new RegExp(`^${re}$`);
+}
+
+const escape = (s: string) => s.replace(/[.+^${}()|[\]\\?]/g, '\\$&');
+
+/**
+ * A scope is only useful if it is narrower than where reviewers comment in general.
+ * Returns false when the glob covers more than `maxShare` of all reviewed paths.
+ */
+export function isDiscriminative(glob: string, allPaths: string[], maxShare = 0.6): boolean {
+  if (allPaths.length === 0) return true;
+  const re = globToRegExp(glob);
+  return allPaths.filter((p) => re.test(p)).length / allPaths.length <= maxShare;
+}

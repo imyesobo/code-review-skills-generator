@@ -45,6 +45,8 @@ export interface Rule {
   confidence: number;
   refinedBy: 'heuristic' | 'llm';
   examples: RuleExample[];
+  /** Ids of the comments behind this rule; used to keep ids/LLM wording stable across runs. */
+  members?: string[];
 }
 
 /** Rules keyed by output scope: "*" for combined, otherwise a repo key. */
@@ -59,5 +61,6 @@ export interface FetchOptions {
 export interface SourceProvider {
   /** Expand a source spec (e.g. an org) into concrete repo keys. */
   listRepos(): Promise<string[]>;
-  fetchComments(repoKey: string, opts: FetchOptions): Promise<ReviewComment[]>;
+  /** `cursor` = newest PR activity timestamp seen, used as the next incremental starting point. */
+  fetchComments(repoKey: string, opts: FetchOptions): Promise<{ comments: ReviewComment[]; cursor?: string }>;
 }

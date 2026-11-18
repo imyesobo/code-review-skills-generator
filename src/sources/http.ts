@@ -12,7 +12,14 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export async function requestJson<T>(url: string, init: RequestInit = {}, retries = 4): Promise<{ data: T; headers: Headers }> {
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(url, init);
-    if (res.ok) return { data: (await res.json()) as T, headers: res.headers };
+    if (res.ok) {
+      const text = await res.text();
+      try {
+        return { data: JSON.parse(text) as T, headers: res.headers };
+      } catch {
+        throw new HttpError(res.status, `${init.method ?? 'GET'} ${url} returned non-JSON: ${text.slice(0, 120)}`);
+      }
+    }
     const retryable = res.status === 429 || res.status >= 500;
     if (!retryable || attempt >= retries) {
       const text = await res.text().catch(() => '');

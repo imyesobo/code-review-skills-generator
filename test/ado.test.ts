@@ -33,7 +33,7 @@ describe('AdoProvider', () => {
 
     const p = new AdoProvider('contoso', 'Web');
     expect(await p.listRepos()).toEqual(['ado:contoso/Web/api']);
-    const comments = await p.fetchComments('ado:contoso/Web/api', { maxPrs: 10, log: () => {} });
+    const { comments, cursor } = await p.fetchComments('ado:contoso/Web/api', { maxPrs: 10, log: () => {} });
 
     expect(calls.every((c) => c.auth === 'Bearer tok' && c.url.includes('api-version=7.1'))).toBe(true);
     expect(comments).toHaveLength(2);
@@ -42,5 +42,6 @@ describe('AdoProvider', () => {
       url: 'https://dev.azure.com/contoso/Web/_git/api/pullrequest/7?discussionId=1',
     });
     expect(comments[1].authorIsBot).toBe(true);
+    expect(cursor).toBe('2026-01-01');
   });
 });

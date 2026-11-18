@@ -45,3 +45,26 @@ describe('mergeManaged', () => {
     expect(mergeManaged(existing, `${START}\nnew\n${END}`)).toBe(`# Mine\n\nkeep\n\n${START}\nnew\n${END}\n\ntail\n`);
   });
 });
+
+describe('writeFiles', async () => {
+  const { mkdtempSync, writeFileSync, mkdirSync, existsSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { writeFiles, GENERATED_NOTE } = await import('../src/generate/index.js');
+
+  it('removes previously generated files that are no longer produced, keeping hand-written ones', () => {
+    const out = mkdtempSync(join(tmpdir(), 'crsg-'));
+    const dir = join(out, '.github/instructions');
+    mkdirSync(join(out, '.github/skills/old-review'), { recursive: true });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'stale.instructions.md'), `---\n---\n${GENERATED_NOTE}\n`);
+    writeFileSync(join(out, '.github/skills/old-review/SKILL.md'), `${GENERATED_NOTE}\n`);
+    writeFileSync(join(dir, 'mine.instructions.md'), 'hand written');
+
+    const { removed } = writeFiles([rule({ applyTo: 'src/**/*.ts' })], { ...DEFAULT_GENERATE, out });
+    expect(removed.sort()).toEqual(['.github/instructions/stale.instructions.md', '.github/skills/old-review/SKILL.md']);
+    expect(existsSync(join(dir, 'mine.instructions.md'))).toBe(true);
+    expect(existsSync(join(dir, 'src-ts.instructions.md'))).toBe(true);
+    expect(existsSync(join(out, '.github/skills/old-review'))).toBe(false);
+  });
+});

@@ -1,6 +1,6 @@
 import type { Rule } from '../types.js';
+import { findCached, type LlmCacheEntry } from '../state.js';
 import { requestJson } from '../sources/http.js';
-import { resolveGitHubToken } from '../sources/github.js';
 
 export interface LlmOptions {
   endpoint: string;
@@ -9,9 +9,12 @@ export interface LlmOptions {
   apiKey?: string;
 }
 
+const OLLAMA = (process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
+
+/** Defaults to a local Ollama server (no AI credits). Any OpenAI-compatible endpoint works. */
 export const DEFAULT_LLM: LlmOptions = {
-  endpoint: 'https://models.github.ai/inference/chat/completions',
-  model: 'openai/gpt-4.1-mini',
+  endpoint: `${/^https?:\/\//.test(OLLAMA) ? OLLAMA : `http://${OLLAMA}`}/v1/chat/completions`,
+  model: 'gemma4:12b',
   maxRules: 40,
 };
 
@@ -22,14 +25,43 @@ For each cluster return:
 - "drop": true if the cluster is not a generalizable practice (chit-chat, one-off question, project status).
 Respond with JSON only: {"rules":[{"id":"...","title":"...","rule":"...","drop":false}]}`;
 
+function apply(r: Rule, p: { title?: string; rule?: string; drop?: boolean }): Rule[] {
+  if (p.drop) return [];
+  return [{ ...r, title: p.title?.trim() || r.title, rule: p.rule?.trim() || r.rule, refinedBy: 'llm' }];
+}
+
+/** Apply previously cached LLM wording without calling any model. */
+export function applyCachedOnly(rules: Rule[], cache: LlmCacheEntry[]): Rule[] {
+  return rules.flatMap((r) => {
+    const hit = findCached(r, cache);
+    return hit ? apply(r, hit) : [r];
+  });
+}
+
 /**
  * Refine the top rules with ONE chat-completions request (OpenAI-compatible API).
+ * Rules whose comments mostly match a cached refinement reuse it and are not sent.
  * Rules not returned, or on any failure, keep their deterministic wording.
+ * New refinements are appended to `cache` (mutated).
  */
-export async function refineWithLlm(rules: Rule[], opts: LlmOptions, log: (m: string) => void): Promise<Rule[]> {
-  const batch = rules.slice(0, opts.maxRules);
-  if (batch.length === 0) return rules;
-  const apiKey = opts.apiKey ?? process.env.LLM_API_KEY ?? resolveGitHubToken();
+export async function refineWithLlm(rules: Rule[], opts: LlmOptions, log: (m: string) => void, cache: LlmCacheEntry[] = []): Promise<Rule[]> {
+  const top = new Set(rules.slice(0, opts.maxRules));
+  const cached = new Map<Rule, LlmCacheEntry>();
+  for (const r of top) {
+    const hit = findCached(r, cache, opts.model);
+    if (hit) cached.set(r, hit);
+  }
+  const batch = [...top].filter((r) => !cached.has(r));
+  const finish = (byId: Map<string, Refined>) =>
+    rules.flatMap((r) => {
+      const c = cached.get(r);
+      if (c) return apply(r, c);
+      const p = byId.get(r.id);
+      return p ? apply(r, p) : [r];
+    });
+  if (cached.size) log(`LLM cache: reused ${cached.size} rule(s)`);
+  if (batch.length === 0) return finish(new Map());
+  const apiKey = opts.apiKey ?? process.env.LLM_API_KEY ?? 'none';
 
   const payload = batch.map((r) => ({
     id: r.id,
@@ -56,21 +88,21 @@ export async function refineWithLlm(rules: Rule[], opts: LlmOptions, log: (m: st
     const parsed = parseJson(data.choices[0]?.message?.content ?? '');
     const byId = new Map(parsed.map((p) => [p.id, p]));
     log(`LLM refined ${byId.size}/${batch.length} rules with ${opts.model}`);
-    return rules.flatMap((r) => {
+    for (const r of batch) {
       const p = byId.get(r.id);
-      if (!p) return [r];
-      if (p.drop) return [];
-      return [{ ...r, title: p.title?.trim() || r.title, rule: p.rule?.trim() || r.rule, refinedBy: 'llm' as const }];
-    });
+      if (p) cache.push({ members: r.members ?? [], title: p.title?.trim() || r.title, rule: p.rule?.trim() || r.rule, drop: !!p.drop, model: opts.model });
+    }
+    return finish(byId);
   } catch (err) {
     log(`LLM refinement skipped: ${(err as Error).message}`);
-    return rules;
+    return finish(new Map());
   }
 }
 
 interface Refined { id: string; title?: string; rule?: string; drop?: boolean }
 
-export function parseJson(content: string): Refined[] {
+export function parseJson(raw: string): Refined[] {
+  const content = raw.replace(/<think>[\s\S]*?<\/think>/g, '');
   const start = content.indexOf('{');
   const end = content.lastIndexOf('}');
   if (start < 0 || end < start) return [];
