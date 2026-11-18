@@ -23,5 +23,22 @@
     "@types/node": "^26.6.6",
     "typescript": "^7.0.2",
     "vitest": "^5.1.1"
-  }
+  },
+  "author": "imyesobo",
+  "homepage": "https://github.com/imyesobo/code-review-skills-generator#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/imyesobo/code-review-skills-generator.git"
+  },
+  "bugs": "https://github.com/imyesobo/code-review-skills-generator/issues",
+  "keywords": [
+    "code-review",
+    "pull-requests",
+    "ai-agents",
+    "agents-md",
+    "copilot-instructions",
+    "skills",
+    "azure-devops",
+    "github"
+  ]
 }
