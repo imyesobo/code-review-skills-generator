@@ -1,0 +1,27 @@
+{
+  "name": "code-review-skills-generator",
+  "version": "0.1.0",
+  "description": "Generate AGENTS.md, path-scoped instructions and SKILL.md files for AI agents from pull request review comments.",
+  "type": "module",
+  "bin": {
+    "crsg": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "start": "node dist/cli.js"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.1"
+  }
+}
